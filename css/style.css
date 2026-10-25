@@ -145,3 +145,38 @@ input:focus, select:focus, textarea:focus, .btn:focus-visible { outline: 2px sol
 .btn.danger:hover { background: var(--err-bg); border-color: #FECACA; }
 .btn:disabled { opacity: .6; cursor: progress; }
 .side-link { border: 0; background: none; padding: 0; color: var(--link); text-decoration: underline; cursor: pointer; font: inherit; }
+
+/* --- fill from document --- */
+.step-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
+.step-head > div { flex: 1 1 420px; min-width: 0; }
+.fill-btn { gap: 8px; white-space: nowrap; }
+.block { display: block; }
+dialog.imp { width: min(880px, calc(100% - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 0; border-radius: 12px; color: var(--ink); background: var(--ground); box-shadow: 0 20px 60px rgba(15, 23, 42, .35); }
+dialog.imp::backdrop { background: rgba(15, 23, 42, .55); }
+.dlg { padding: 24px; display: grid; gap: 16px; }
+.dlg-head { display: flex; align-items: center; gap: 12px; }
+.dlg-head h2 { font-size: 20px; flex: 1; }
+.scope { border: 1px solid var(--line-2); border-radius: 8px; padding: 10px 14px; display: grid; gap: 6px; font-size: 14px; background: var(--card); }
+.scope legend { font-size: 12px; font-weight: 600; color: var(--muted); padding: 0 4px; }
+.scope label { display: flex; gap: 8px; align-items: flex-start; min-height: 28px; }
+.howto { margin: 0; padding: 0; list-style: none; counter-reset: s; display: grid; gap: 12px; }
+.howto > li { counter-increment: s; background: var(--card); border-radius: 10px; padding: 16px 16px 16px 56px; position: relative; display: grid; gap: 8px; font-size: 14px; }
+.howto > li::before { content: counter(s); position: absolute; left: 16px; top: 14px; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff; font: 600 13px/26px var(--mono); text-align: center; }
+.howto .row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.howto textarea { width: 100%; font-family: var(--mono); font-size: 12.5px; }
+.howto summary { cursor: pointer; color: var(--link); font-size: 13px; min-height: 28px; }
+.imp-sec { background: var(--card); border-radius: 10px; padding: 16px; display: grid; gap: 10px; }
+.imp-sec h3 { margin: 0; font-size: 16px; }
+.imp-sec h4 { margin: 4px 0 0; font-size: 14px; }
+.imp-table td { vertical-align: top; }
+.imp-table td:first-child { width: 40px; }
+.imp-table .pre { white-space: pre-line; }
+.imp-table tr.conflict td, .imp-rows li.conflict { background: var(--warn-bg); }
+.imp-table tr.bad td { background: var(--err-bg); }
+.imp-table input[type=checkbox], .imp-rows input[type=checkbox] { width: 20px; height: 20px; margin: 2px 0 0; }
+.imp-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.imp-rows li { border: 1px solid var(--line); border-radius: 8px; }
+.imp-rows label { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; cursor: pointer; font-size: 14px; }
+.imp-rows .small { margin-top: 2px; }
+.tagnote { font-size: 12px; font-weight: 600; color: var(--warn); }
+.dlg .card.empty, .dlg .warn { margin: 0; }

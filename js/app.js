@@ -218,10 +218,15 @@ ${warnings.length ? `<div class="card warn"><div class="warn-title">Missing befo
     <ol>${rail}</ol>
   </nav>
   <main class="content">
-    <div>
-      <div class="eyebrow mono">STEP ${num} OF ${F.STEPS.length}${step.special ? "" : ` · SECTION ${num} OF MANUAL`}</div>
-      <h1>${esc(step.title)}</h1>
-      ${step.intro ? `<p class="lede">${esc(step.intro)}</p>` : ""}
+    <div class="step-head">
+      <div>
+        <div class="eyebrow mono">STEP ${num} OF ${F.STEPS.length}${step.special ? "" : ` · SECTION ${num} OF MANUAL`}</div>
+        <h1>${esc(step.title)}</h1>
+        ${step.intro ? `<p class="lede">${esc(step.intro)}</p>` : ""}
+      </div>
+      ${step.enabled ? `<button type="button" class="btn fill-btn" data-action="fill">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M9 14l2 2 4-4"/></svg>
+        Fill from document…</button>` : ""}
     </div>
     ${main}
   </main>
@@ -340,6 +345,170 @@ ${warnings.length ? `<div class="card warn"><div class="warn-title">Missing befo
     go("#/");
   }
 
+  // --- fill from document (see importer.js) ---------------------------------
+
+  const dlg = document.createElement("dialog");
+  dlg.className = "imp";
+  dlg.setAttribute("aria-labelledby", "imp-title");
+  document.body.appendChild(dlg);
+  let imp = null;   // { bid, stepKey, scope: "all"|"step", reply, plan, error }
+
+  const fillSteps = () => F.importScope(imp.scope === "step" ? imp.stepKey : null);
+
+  function openFill() {
+    if (dirty) {
+      if (!saveForm()) return;
+      render();                                   // page behind the dialog reflects the save
+    }
+    const step = F.byKey(route.key);
+    imp = { bid: route.bid, stepKey: step.special ? null : step.key, scope: "all", reply: "", plan: null, error: "" };
+    drawFill();
+    dlg.showModal();
+  }
+
+  const dlgHead = (title) => `<div class="dlg-head"><h2 id="imp-title">${title}</h2>
+    <button type="button" class="icon-btn" data-imp="close" aria-label="Close">×</button></div>`;
+
+  function drawFill() {
+    const b = F.store.get(imp.bid);
+    if (!imp.plan) {
+      const thisStep = imp.stepKey ? F.byKey(imp.stepKey) : null;
+      dlg.innerHTML = `<div class="dlg">
+  ${dlgHead("Fill from a document")}
+  <p class="lede">Have your company's AI assistant (for example Microsoft Copilot) read an equipment list, O&amp;M manual, survey or old facilities manual, then fill in <strong>${esc(b.name)}</strong> for you. Nothing changes until you review it.</p>
+  ${thisStep ? `<fieldset class="scope"><legend>What to fill</legend>
+    <label><input type="radio" name="imp-scope" value="all"${imp.scope === "all" ? " checked" : ""}> All sections (${esc(F.importScope().map((s) => s.title).join(", "))})</label>
+    <label><input type="radio" name="imp-scope" value="step"${imp.scope === "step" ? " checked" : ""}> ${esc(thisStep.title)} only</label>
+  </fieldset>` : ""}
+  <ol class="howto">
+    <li>
+      <div><strong>Copy the prompt.</strong> It tells the AI exactly which fields to return.</div>
+      <div class="row"><button type="button" class="btn dark" data-imp="copy">Copy prompt</button><span class="small dim-ink" id="imp-copied" role="status"></span></div>
+      <details><summary>Show prompt</summary><textarea id="imp-prompt" readonly rows="10">${esc(F.importPrompt(fillSteps()))}</textarea></details>
+    </li>
+    <li>
+      <div><strong>Open your AI and attach the document</strong> (or paste its text), then paste the prompt and send.</div>
+      <div class="small dim-ink">Typed documents and spreadsheets work best. Scanned PDFs only work if your AI can read images.</div>
+    </li>
+    <li>
+      <label for="imp-reply"><strong>Copy the AI's whole reply and paste it here.</strong></label>
+      <textarea id="imp-reply" rows="8" placeholder='{ "profile": { … }, … }'>${esc(imp.reply)}</textarea>
+      ${imp.error ? `<div class="err" role="alert">${esc(imp.error)}</div>` : ""}
+    </li>
+  </ol>
+  <div class="actions">
+    <button type="button" class="btn primary" data-imp="preview">Preview changes</button>
+    <button type="button" class="btn" data-imp="close">Cancel</button>
+  </div>
+</div>`;
+      return;
+    }
+
+    const p = imp.plan, n = F.importCounts(p);
+    const secs = p.sections.map((sec, si) => {
+      const fields = sec.fields.length ? `<div class="table-wrap"><table class="grid imp-table">
+  <thead><tr><th scope="col"><span class="sr">Apply</span></th><th scope="col">Field</th><th scope="col">Now</th><th scope="col">From document</th></tr></thead>
+  <tbody>${sec.fields.map((f, fi) => `<tr class="${f.problem ? "bad" : f.conflict ? "conflict" : ""}">
+    <td><input type="checkbox" data-pick="${si}:f:${fi}" aria-label="Apply ${esc(f.label)}"${f.checked ? " checked" : ""}${f.problem ? " disabled" : ""}></td>
+    <td>${esc(f.label)}</td>
+    <td class="pre">${f.current ? esc(f.current) : '<span class="dim-ink">—</span>'}</td>
+    <td class="pre">${f.problem ? `<span class="err">${esc(f.problem)}</span>` : esc(f.value)}${f.conflict ? '<span class="tagnote block">Replaces what is entered now</span>' : ""}${f.note ? `<span class="small dim-ink block">${esc(f.note)}</span>` : ""}</td>
+  </tr>`).join("")}</tbody></table></div>` : "";
+
+      const cols = sec.step.table ? sec.step.table.columns : [];
+      const rows = sec.rows.length ? `<h4>${esc(sec.step.table.title)}</h4><ul class="imp-rows">${sec.rows.map((r, ri) => {
+        const summary = r.kind === "add"
+          ? cols.slice(1).filter((c) => r.row[c.name]).map((c) => `${esc(c.label)}: ${esc(r.row[c.name])}`).join(" · ")
+          : r.changes.map((ch) => `${esc(ch.label)}: ${ch.from ? `<s>${esc(ch.from)}</s> → ` : ""}${esc(ch.to)}`).join(" · ");
+        return `<li class="${r.conflict ? "conflict" : ""}"><label>
+    <input type="checkbox" data-pick="${si}:r:${ri}"${r.checked ? " checked" : ""}${r.kind === "update" && !r.changes.length ? " disabled" : ""}>
+    <span><strong class="mono">${esc(r.tag)}</strong> <span class="badge ${r.kind === "add" ? "ok" : "warn"}">${r.kind === "add" ? "NEW" : "UPDATE"}</span>
+      <span class="small block">${summary || "—"}</span>
+      ${r.notes.map((x) => `<span class="small dim-ink block">${esc(x)}</span>`).join("")}
+      ${r.problems.map((x) => `<span class="small err block">${esc(x)}</span>`).join("")}
+      ${r.conflict ? '<span class="tagnote block">Replaces values already entered</span>' : ""}</span>
+  </label></li>`;
+      }).join("")}</ul>` : "";
+      return `<section class="imp-sec"><h3>${esc(sec.step.title)}</h3>${fields}${rows}</section>`;
+    }).join("");
+
+    dlg.innerHTML = `<div class="dlg">
+  ${dlgHead("Review changes")}
+  ${p.notes.length ? `<div class="card warn"><div class="warn-title">The AI flagged these</div><ul>${p.notes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+  ${p.sections.length
+    ? `<p class="small dim-ink">Ticked items will be saved. Anything that would replace a value you already entered starts unticked. Blank values in the document never erase anything.</p>${secs}`
+    : `<div class="card empty"><p>Nothing new to fill: everything in the reply is blank or already matches what's entered.</p></div>`}
+  <div class="actions">
+    <button type="button" class="btn primary" data-imp="apply"${n ? "" : " disabled"}>Apply ${plural(n, "change")}</button>
+    <button type="button" class="btn back" data-imp="back">← Back</button>
+    <button type="button" class="btn" data-imp="close">Cancel</button>
+  </div>
+</div>`;
+  }
+
+  async function copyPrompt() {
+    const ta = dlg.querySelector("#imp-prompt"), status = dlg.querySelector("#imp-copied");
+    try {
+      await navigator.clipboard.writeText(ta.value);
+      status.textContent = "Copied. Now paste it into your AI.";
+    } catch (e) {
+      ta.closest("details").open = true;
+      ta.focus(); ta.select();
+      status.textContent = document.execCommand && document.execCommand("copy")
+        ? "Copied. Now paste it into your AI."
+        : "Press Ctrl+C to copy the selected prompt.";
+    }
+  }
+
+  dlg.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-imp]");
+    if (!btn) return;
+    const b = F.store.get(imp.bid);
+    switch (btn.dataset.imp) {
+      case "copy": copyPrompt(); break;
+      case "close": dlg.close(); break;
+      case "back": imp.plan = null; drawFill(); break;
+      case "preview":
+        imp.reply = dlg.querySelector("#imp-reply").value;
+        if (!imp.reply.trim()) { imp.error = "Paste the AI's reply first."; drawFill(); break; }
+        try { imp.plan = F.buildImportPlan(b, fillSteps(), imp.reply); imp.error = ""; }
+        catch (err) { imp.error = err.message; }
+        drawFill();
+        break;
+      case "apply": {
+        let r;
+        try { r = F.applyImport(b, imp.plan); }
+        catch (err) { flash("error", err.message); dlg.close(); render(); break; }
+        const parts = [];
+        if (r.fields) parts.push(plural(r.fields, "field"));
+        if (r.added) parts.push(`${plural(r.added, "unit")} added`);
+        if (r.updated) parts.push(`${plural(r.updated, "unit")} updated`);
+        flash("ok", `Filled from document: ${parts.join(", ")}. Look over each section before you publish.`);
+        dlg.close();
+        render();
+        break;
+      }
+    }
+  });
+
+  dlg.addEventListener("change", (e) => {
+    if (e.target.name === "imp-scope") {
+      imp.reply = dlg.querySelector("#imp-reply").value;
+      imp.scope = e.target.value;
+      drawFill();
+      return;
+    }
+    const pick = e.target.dataset.pick;
+    if (pick) {
+      const [si, kind, i] = pick.split(":");
+      const sec = imp.plan.sections[+si];
+      (kind === "f" ? sec.fields : sec.rows)[+i].checked = e.target.checked;
+      const n = F.importCounts(imp.plan), apply = dlg.querySelector('[data-imp="apply"]');
+      apply.textContent = `Apply ${plural(n, "change")}`;
+      apply.disabled = !n;
+    }
+  });
+
   // --- events ---------------------------------------------------------------
 
   document.addEventListener("click", (e) => {
@@ -367,6 +536,7 @@ ${warnings.length ? `<div class="card warn"><div class="warn-title">Missing befo
       const bid = act.dataset.bid;
       switch (act.dataset.action) {
         case "docx": downloadManual(bid, act); break;
+        case "fill": openFill(); break;
         case "export": exportBackup(); break;
         case "import": fileInput.value = ""; fileInput.click(); break;
         case "duplicate": {

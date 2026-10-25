@@ -27,6 +27,22 @@ Only the code goes in the repo. Building data never leaves the browser it was en
 - **Duplicate** copies a building, clears its address, doc number and serials, and marks every section for review.
 - **Word** (home) / **Download manual** (Review step) builds the .docx. Unfinished sections are labeled in the manual and on its cover.
 
+## Fill from a document (with your work AI)
+
+The **Fill from document…** button on each step works with any AI chat your company allows (Microsoft Copilot, ChatGPT, Gemini). The app doesn't connect to the AI itself; you carry the text across:
+
+1. **Copy prompt.** The prompt is generated from `js/steps.js`, so it always matches the current fields. Choose *All sections* or *This section only*.
+2. In your AI, **attach the document** (equipment list, O&M manual, survey, old facilities manual) or paste its text, then paste the prompt and send.
+3. **Paste the AI's whole reply** back into the app and click **Preview changes**.
+4. **Review and apply.** Every value is shown next to what's entered now:
+   - New values start ticked. Anything that would **replace** a value you already entered starts unticked.
+   - Blank or "N/A" values never erase anything.
+   - Loose answers are matched to the allowed choices ("BMS" becomes "Building automation system (BMS)", "yearly" becomes "Annual", "42,000 sq ft" becomes 42000). Anything that can't be matched is shown in red and skipped.
+   - Equipment is matched by tag. A known tag becomes an UPDATE and a new tag is added. A unit with no tag is added as `NEW-1`, `NEW-2`… for you to rename.
+   - Anything the AI said it was unsure about is listed at the top.
+
+The AI will make mistakes, so check the preview against the document. The document goes to your AI, not to this app, so use only an AI your company has approved for these documents.
+
 ## Files
 
 ```
@@ -35,6 +51,7 @@ js/steps.js         THE WIZARD DEFINITION: steps, fields, equipment columns, man
 js/logic.js         validation, completeness, navigation
 js/store.js         local storage, backup export/import
 js/manual.js        Word document generator
+js/importer.js      Fill from document: prompt, reply parsing, review plan, apply
 js/app.js           screens and buttons
 css/style.css
 vendor/docx.iife.js docx 9.14.0 (MIT; see vendor/docx-LICENSE.txt), loaded only when generating a manual
