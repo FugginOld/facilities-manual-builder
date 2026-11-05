@@ -6,8 +6,7 @@
 
   // --- option lists -------------------------------------------------------------
 
-  F.CATEGORIES = ["HVAC", "Fire & life safety", "Elevator", "Electrical / generator", "Plumbing / backflow",
-    "Roofing", "Janitorial", "Landscaping", "Pest control", "Waste / recycling", "Security / access", "Other"];
+  F.CATEGORIES = F.TRADES;                                   // shared with the vendor directory (steps.js)
   F.BILLING = ["Monthly", "Quarterly", "Semi-annual", "Annual", "Per visit", "One-time"];
   F.SERVICE_FREQ = ["Weekly", "Monthly", "Quarterly", "Semi-annual", "Annual", "As needed"];
   F.CONTRACT_STATUS = ["Active", "Not renewing", "Ended"];

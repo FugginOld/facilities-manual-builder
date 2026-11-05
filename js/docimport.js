@@ -13,13 +13,12 @@
   F.assetTags = (b) => {
     if (!b) return [];
     const out = [];
-    for (const s of F.STEPS) {
-      if (!s.table) continue;
-      const key = s.table.columns[0].name;
-      for (const r of b.equipment[s.table.system] || []) {
-        if (!r[key]) continue;
+    for (const s of F.STEPS) for (const t of s.tables) {
+      if (!t.assets) continue;
+      for (const r of b.equipment[t.system] || []) {
+        if (!r[t.key]) continue;
         const desc = [r.type, r.area_served].filter(Boolean).join(", ");
-        out.push({ tag: r[key], system: s.title, label: desc ? `${r[key]} (${desc})` : r[key] });
+        out.push({ tag: r[t.key], system: s.title, label: desc ? `${r[t.key]} (${desc})` : r[t.key] });
       }
     }
     return out;
@@ -158,6 +157,7 @@
 
   function knownVendors(ctx) {
     const seen = new Map();
+    for (const v of F.store.records("vendors")) seen.set(F.canonVendor(v.name), v.name);
     for (const r of [...ctx.contracts, ...ctx.invoices].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))) {
       const c = F.canonVendor(r.vendor);
       if (c && !seen.has(c)) seen.set(c, r.vendor);
@@ -309,6 +309,8 @@
   /** Save the ticked drafts. Returns ids saved. */
   F.applyDrafts = (drafts) => drafts.filter((d) => d.include).map((d) => {
     const r = d.record;
+    r.vendorId = F.ensureVendor(r.vendor, d.kind === "contract" && F.TRADES.includes(r.category) ? { trade: r.category } : {});
+    if (r.vendorId) r.vendor = F.vendorById(r.vendorId).name;
     if (d.kind === "invoice") {
       r.lines = r.lines.map((l) => ({ description: l.description, asset: l.asset, amount: l.amount }));
       return F.store.saveRecord("invoices", r);

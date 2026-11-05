@@ -4,15 +4,19 @@
 (function (F) {
   "use strict";
 
-  const INK = "1B2430", ACCENT = "C2410C", MUTED = "5B6575", ZEBRA = "F2F4F7", GRIDLINE = "9AA3AF";
+  const INK = "1B2430", MUTED = "5B6575", ZEBRA = "F2F4F7", GRIDLINE = "9AA3AF";
+  let ACCENT = "C2410C";                       // set per document from settings.accent
   const MONO = "Consolas", BODY = "Arial";
   const PAGE_W = 12240, PAGE_H = 15840, MARGIN = 1152;      // twips: Letter, 0.8" margins
   const CONTENT = PAGE_W - 2 * MARGIN;                     // 9936 = 6.9"
 
-  F.buildManual = function (b, today = new Date()) {
+  /** assets: { settings, images: { fileId: {data: Uint8Array, type: "jpg"|"png", w, h} } } */
+  F.buildManual = function (b, today = new Date(), assets = {}) {
     const D = window.docx;
+    const settings = assets.settings || {}, images = assets.images || {};
+    ACCENT = /^#[0-9a-f]{6}$/i.test(settings.accent || "") ? settings.accent.slice(1).toUpperCase() : "C2410C";
     const { Paragraph, TextRun, Table, TableRow, TableCell, WidthType, ShadingType,
-            BorderStyle, Header, Footer, PageNumber, TabStopType, HeadingLevel, TableLayoutType } = D;
+            BorderStyle, Header, Footer, PageNumber, TabStopType, HeadingLevel, TableLayoutType, ImageRun, AlignmentType } = D;
 
     // --- helpers -----------------------------------------------------------
     const run = (text, o = {}) => new TextRun({
@@ -86,7 +90,7 @@
           const kids = [];
           for (const f of plain) {
             kids.push(para([run(f.label.toUpperCase(), { bold: true, size: 8.5, color: ACCENT })], { spacing: { after: 40 } }));
-            kids.push(para([run(data[f.name] || "—", { size: 11 })]));
+            kids.push(para([run(F.displayValue(f, data[f.name]) || "—", { size: 11 })]));
           }
           for (const f of lists) {
             kids.push(para([run(f.label.toUpperCase(), { bold: true, size: 8.5, color: ACCENT })], { spacing: { after: 40 } }));
@@ -102,7 +106,7 @@
           }), spacer()];
         }
 
-        const out = plain.length ? kv(plain.map((f) => [f.label, data[f.name] || ""])) : [];
+        const out = plain.length ? kv(plain.map((f) => [f.label, F.displayValue(f, data[f.name])])) : [];
         for (const f of lists) {
           out.push(para([run(f.label, { bold: true })]));
           out.push(...numbered(lines(data[f.name]).length ? lines(data[f.name]) : ["—"]));
@@ -110,25 +114,27 @@
         return out;
       },
 
-      table(step, part, data, rows) {
-        if (!rows.length) return [muted(`No ${step.table.unitNoun}s listed.`)];
-        const cols = step.table.columns;
-        return grid(cols.map((c) => c.label), rows.map((r) => cols.map((c) => r[c.name] || "")), {
+      table(step, part, data, rowsBy) {
+        const t = F.tableOf(step, part.table), rows = rowsBy[t.system] || [];
+        if (!rows.length) return [muted(`No ${t.unitNoun}s listed.`)];
+        const cols = t.columns;
+        return grid(cols.map((c) => c.label), rows.map((r) => cols.map((c) => F.displayValue(c, r[c.name]))), {
           mono: cols.map((c, i) => (c.mono ? i : -1)).filter((i) => i >= 0),
           weights: cols.map((c) => c.w),
         });
       },
 
-      pm(step, part, data, rows) {
-        const key = step.table.columns[0].name;
+      pm(step, part, data, rowsBy) {
+        const t = F.tableOf(step, part.table), rows = rowsBy[t.system] || [], key = t.key;
         const groups = Object.fromEntries(F.PM_INTERVALS.map((i) => [i, []]));
         const unscheduled = [];
         for (const r of rows) (groups[r.pm_interval] || unscheduled).push(r[key]);
-        const by = data.service_vendor || "In-house";
+        const byField = part.by || "service_vendor";
+        const by = (data[byField] && F.vendorName(data[byField])) || "In-house";
         const out = Object.entries(groups).filter(([, tags]) => tags.length)
-          .map(([interval, tags]) => [F.PM_TASK, tags.join(", "), interval, by]);
+          .map(([interval, tags]) => [part.task || F.PM_TASK, tags.join(", "), interval, by]);
         if (unscheduled.length) out.push(["No PM interval set: assign one", unscheduled.join(", "), "—", "—"]);
-        if (!out.length) return [muted("No equipment listed.")];
+        if (!out.length) return [muted(`No ${t.unitNoun}s listed.`)];
         return grid(["Task", "Units", "Interval", "Performed by"], out, { mono: [1], weights: [3, 2, 1.2, 1.8] });
       },
     };
@@ -141,8 +147,18 @@
     const complete = F.SECTIONS.every((s) => (b.steps[s.key] || {}).completed);
     const ymd = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
+    // image scaled to fit a box (docx sizes are px at 96 dpi)
+    const picture = (img, maxW, maxH, alt) => {
+      const k = Math.min(maxW / img.w, maxH / img.h, 1);
+      return new ImageRun({ type: img.type, data: img.data, transformation: { width: Math.round(img.w * k), height: Math.round(img.h * k) },
+        altText: { name: alt, description: alt, title: alt } });
+    };
+    const logo = settings.logoId && images[settings.logoId];
+
     const body = [
-      para([run("FACILITIES MANUAL", { bold: true, size: 11, color: ACCENT })], { spacing: { before: 1920, after: 120 } }),
+      ...(logo ? [para([picture(logo, 220, 90, `${settings.companyName || "Company"} logo`)], { spacing: { before: 600, after: 240 } })] : []),
+      para([run(settings.companyName ? `${settings.companyName.toUpperCase()} · FACILITIES MANUAL` : "FACILITIES MANUAL", { bold: true, size: 11, color: ACCENT })],
+        { spacing: { before: logo ? 600 : 1920, after: 120 } }),
       para([run(name, { bold: true, size: 30 })], { border: { bottom: { ...edge(ACCENT, 18), space: 4 } } }),
       para([run(profile.address || "Address not set", { size: 12, color: MUTED })]),
       spacer(),
@@ -150,13 +166,15 @@
         ["Document number", docNo],
         ["Revision", rev],
         ["Generated", ymd],
+        ...(settings.preparedBy ? [["Prepared by", settings.preparedBy]] : []),
         ["Status", complete ? "COMPLETE" : "DRAFT: sections incomplete"],
       ], 7200),
       para([run("Contents", { bold: true, size: 12 })]),
       ...grid(["§", "Section", "Status"], F.SECTIONS.map((s) => {
         const sv = b.steps[s.key];
         return [String(F.number(s)), s.title, sv && sv.completed ? "Complete" : sv ? "Draft" : "Not started"];
-      }), { weights: [0.5, 4, 1.5] }),
+      }).concat(Object.values(b.photos || {}).some((l) => l.length)
+        ? [["A", "Appendix: photos", `${Object.values(b.photos).reduce((n, l) => n + l.length, 0)} photos`]] : []), { weights: [0.5, 4, 1.5] }),
     ];
 
     for (const s of F.SECTIONS) {
@@ -167,13 +185,47 @@
         children: [run(`${num}   `, { color: ACCENT }), run(s.title)],
       }));
       const sv = b.steps[s.key];
-      if (!s.enabled || !sv) { body.push(muted("Not yet completed.")); continue; }
-      const rows = s.table ? (b.equipment[s.table.system] || []) : [];
+      const nPhotos = (((b.photos || {})[s.key]) || []).length;
+      const photoNote = () => { if (nPhotos) body.push(muted(`${nPhotos === 1 ? "1 photo" : `${nPhotos} photos`} for this section in Appendix A.`)); };
+      if (!s.enabled || !sv) { body.push(muted("Not yet completed.")); photoNote(); continue; }
+      const rows = F.stepRows(b, s);
       if (!sv.completed) body.push(muted("Draft: required items in this section are still missing."));
       s.manual.forEach((part, j) => {
         body.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [run(`${num}.${j + 1}  ${part.title}`)] }));
         body.push(...parts[part.kind](s, part, sv.data, rows));
       });
+      photoNote();
+    }
+
+    // Appendix A: photos, two per row, grouped by section
+    const withPhotos = F.SECTIONS.filter((s) => (((b.photos || {})[s.key]) || []).length);
+    if (withPhotos.length) {
+      body.push(new Paragraph({
+        heading: HeadingLevel.HEADING_1, pageBreakBefore: true,
+        border: { bottom: { ...edge(ACCENT, 18), space: 4 } },
+        children: [run("Appendix A   ", { color: ACCENT }), run("Photos")],
+      }));
+      const half = Math.floor(CONTENT / 2);
+      for (const s of withPhotos) {
+        body.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [run(`${F.number(s)}  ${s.title}`)] }));
+        const list = b.photos[s.key];
+        const cellFor = (ph) => {
+          const kids = [];
+          const img = ph && images[ph.id];
+          if (ph && img) kids.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 60 }, children: [picture(img, 300, 260, ph.caption || ph.ref || s.title)] }));
+          else if (ph) kids.push(para([run("Photo not available in this browser", { italic: true, color: MUTED })]));
+          if (ph) {
+            const label = [ph.ref, ph.caption].filter(Boolean).join(" — ");
+            kids.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 0 }, children: [run(label || " ", { size: 9, color: MUTED })] }));
+          } else kids.push(new Paragraph({ children: [] }));
+          return new TableCell({ width: { size: half, type: WidthType.DXA }, margins: { top: 100, bottom: 120, left: 80, right: 80 }, children: kids });
+        };
+        const rowsOut = [];
+        for (let i = 0; i < list.length; i += 2) rowsOut.push(new TableRow({ cantSplit: true, children: [cellFor(list[i]), cellFor(list[i + 1])] }));
+        body.push(new Table({ width: { size: half * 2, type: WidthType.DXA }, columnWidths: [half, half], layout: TableLayoutType.FIXED,
+          borders: Object.fromEntries(["top", "bottom", "left", "right", "insideHorizontal", "insideVertical"].map((k) => [k, { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }])),
+          rows: rowsOut }), spacer());
+      }
     }
 
     const small = { size: 8.5, color: MUTED };
@@ -200,7 +252,7 @@
         })] }) },
         footers: { default: new Footer({ children: [new Paragraph({
           tabStops: [{ type: TabStopType.RIGHT, position: CONTENT }],
-          children: [run("Uncontrolled when printed", small),
+          children: [run(settings.footerText || "Uncontrolled when printed", small),
             new TextRun({ children: ["\tPage ", PageNumber.CURRENT], size: 17, color: MUTED })],
         })] }) },
         children: body,

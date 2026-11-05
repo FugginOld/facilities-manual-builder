@@ -15,8 +15,8 @@ Only the code goes in the repo. Building data never leaves the browser it was en
 
 ## Where your data lives
 
-- Data is saved in **this browser's local storage, on this PC**. Another browser, another PC, or an InPrivate/Incognito window will not see it.
-- **Export backup** (top right) downloads a `.json` file of every building, contract, invoice, budget and setting. Keep it on OneDrive or a network drive. The top bar shows an orange dot when there are changes since your last backup.
+- Data is saved in **this browser on this PC**: records in local storage, photos and the logo in the browser's database (IndexedDB). Another browser, another PC, or an InPrivate/Incognito window will not see it.
+- **Export backup** (top right) downloads a `.json` file of every building, contract, invoice, vendor, budget, setting **and photo**. With many photos the file can be tens of MB. Keep it on OneDrive or a network drive. The top bar shows an orange dot when there are changes since your last backup.
 - **Import** loads a backup into any browser. It only adds data: new buildings are added, and an existing building is replaced only if the file's copy is newer. Nothing gets deleted.
 - Clearing browser data ("cookies and site data") erases the local copy. Your backup file is the safety net.
 
@@ -26,6 +26,19 @@ Only the code goes in the repo. Building data never leaves the browser it was en
 - Missing required items (`*`) never block saving; they keep the section marked incomplete. Bad numbers, duplicate equipment tags, or a row with no tag do block saving.
 - **Duplicate** copies a building, clears its address, doc number and serials, and marks every section for review.
 - **Word** (home) / **Download manual** (Review step) builds the .docx. Unfinished sections are labeled in the manual and on its cover.
+- **Wizard sections built:** Building profile, Contacts & vendors, Utilities & shutoffs, Life safety, Mechanical — HVAC. Electrical, Plumbing and PM schedule show as "soon".
+- **Photos** (card on every step): *+ Add photos* from files, or *Take photo* with the camera on a phone or tablet. Give each a caption and pick what it shows (e.g. RTU-1). Photos are shrunk to about 1600 px before saving, and printed two per row in **Appendix A — Photos** of the manual.
+- **CSV** on every wizard table: *Export CSV* downloads the table (it doubles as a template); *Import CSV* adds or updates rows from a spreadsheet through the same review screen as Fill from document. Columns are matched by heading; unknown columns are ignored; rows are matched by their tag/ID.
+- **Settings** (top right): company name, logo, accent color, "Prepared by" and footer text for the manual, plus the budget-year start month.
+
+## Vendors
+
+The **Vendors** tab is one directory shared by everything: the wizard's vendor pickers (Contacts & vendors, utility providers, HVAC service contractor, fire alarm monitoring and inspection), contracts, invoices and costs.
+- Each vendor has a trade, contact, phone, **after-hours phone**, email, account no., address, notes and **insurance certificate (COI) expiry**. Expired or soon-expiring COIs are flagged.
+- The manual prints vendor names with their phone numbers, so updating a phone in the directory updates every manual.
+- Typing a vendor on a contract or invoice suggests directory names. Spelling variants ("ACME MECHANICAL LLC") match the existing vendor, and a genuinely new name is added to the directory when you save.
+- Renaming a vendor updates its contracts and invoices. **Merge duplicate** moves everything from one vendor to another. A vendor in use can't be deleted, only merged.
+- Each vendor page shows spend by budget year, its contracts, and every building manual it appears in.
 
 ## Fill from a document (with your work AI)
 
@@ -69,6 +82,8 @@ index.html          page shell
 js/steps.js         THE WIZARD DEFINITION: steps, fields, equipment columns, manual subsections
 js/logic.js         validation, completeness, navigation
 js/store.js         local storage, backup export/import
+js/vendors.js       vendor directory: lookup, linking, rename, merge, COI status
+js/files.js         photos and logo in IndexedDB, image resizing
 js/manual.js        Word document generator
 js/importer.js      Fill from document: prompt, reply parsing, review plan, apply
 js/finance.js       contract/invoice fields, term & renewal math, budget years, cost report, CSV, calendar file
@@ -81,16 +96,15 @@ vendor/docx.iife.js docx 9.14.0 (MIT; see vendor/docx-LICENSE.txt), loaded only 
 
 ## Adding a section
 
-Edit only `js/steps.js`. Give the step `fields`, optionally a `table` (repeating rows) and `manual` parts, then delete `enabled: false`. The page, validation, review status and Word chapter all follow from that. Existing saved data keeps working.
+Edit only `js/steps.js`. Give the step `fields`, optionally `tables` (repeating rows) and `manual` parts, then delete `enabled: false`. The page, validation, review status, Fill from document, CSV, photos and Word chapter all follow from that. Existing saved data keeps working. The comment at the top of `steps.js` lists every option (vendor pickers, `assets: true` for equipment tables, inspection schedules, etc.); Utilities and Life safety are good examples to copy.
 
-Example: Electrical would get `table: { system: "electrical", title: "Panel schedule", unitNoun: "panel", columns: [...] }` plus a `{ title: "Emergency shutdown", kind: "fields", fields: [...], callout: true }` manual part.
+Example: Electrical would get `tables: [{ system: "electrical", title: "Panel schedule", unitNoun: "panel", assets: true, columns: [...] }]` plus a `{ title: "Emergency shutdown", kind: "fields", fields: [...], callout: true }` manual part.
 
 To update the live site, edit the file on github.com (pencil icon) or upload the changed file. Pages republishes in about a minute.
 
 ## Next up
 
-1. Contacts & vendors, then turn "Service contractor" into a picker
-2. Utilities & shutoffs and Life safety
-3. Photo attachments (nameplates, shutoff locations) in a manual appendix
-4. CSV import/export for equipment tables
-5. Company logo and styles on the cover
+1. Electrical step: panel schedule, main disconnect, generator / UPS, transfer switch
+2. Plumbing step: water heaters, backflow preventers (with annual test dates), sump and lift pumps
+3. PM schedule step: one combined calendar across HVAC, life safety and the others, plus contract service visits
+4. COI and inspection due dates in the calendar (.ics) reminders, alongside contract deadlines

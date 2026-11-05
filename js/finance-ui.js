@@ -1,6 +1,7 @@
 /* Screens for Contracts, Invoices and Costs. Routes:
  *   #/contracts  #/contracts/new  #/contracts/<id>
  *   #/invoices   #/invoices/new   #/invoices/<id>   (new accepts ?contract=<id>)
+ *   #/vendors    #/vendors/new    #/vendors/<id>     (new accepts ?return=<hash>)
  *   #/costs
  * app.js owns the router, top bar, flashes and dirty tracking; it calls into
  * F.finUI and exposes its helpers as F.ui. */
@@ -14,7 +15,7 @@
 
   // per-viewer filters (remembered in this browser when possible)
   // year / invYear: budget years; null = the current one; invYear 0 = all years
-  const view = { scope: "all", year: null, invYear: null, vendor: "", type: "" };
+  const view = { scope: "all", year: null, invYear: null, vendor: "", type: "", vq: "", trade: "" };
   try { Object.assign(view, JSON.parse(localStorage.getItem("fmb.view") || "{}")); } catch (e) { /* ignore */ }
   const remember = () => { try { localStorage.setItem("fmb.view", JSON.stringify(view)); } catch (e) { /* ignore */ } };
 
@@ -105,19 +106,20 @@
         input = `<div class="money"><span aria-hidden="true">$</span><input id="${id}" name="${f.name}" type="text" inputmode="decimal" value="${esc(v)}" placeholder="${esc(f.placeholder || "")}" autocomplete="off"></div>`;
         break;
       default:
-        input = `<input id="${id}" name="${f.name}" type="text" value="${esc(v)}" placeholder="${esc(f.placeholder || "")}"${f.kind === "number" ? ' inputmode="decimal"' : ""} autocomplete="off">`;
+        input = `<input id="${id}" name="${f.name}" type="text" value="${esc(v)}" placeholder="${esc(f.placeholder || "")}"${f.kind === "number" ? ' inputmode="decimal"' : ""}${opts.vendorList ? ' list="vendor-list"' : ""} autocomplete="off">`;
+        if (opts.vendorList) input += `<datalist id="vendor-list">${F.vendorChoices().map((x) => `<option value="${esc(x.name)}"></option>`).join("")}</datalist>`;
     }
     return `<div class="field${wide ? " wide" : ""}${error ? " has-error" : ""}">
   <label for="${id}">${esc(f.label)}${f.required ? ' <span class="req" title="Required">*</span>' : ""}</label>
   ${input}
-  ${error ? `<div class="err">${esc(error)}</div>` : f.help ? `<div class="help">${esc(f.help)}</div>` : ""}
+  ${error ? `<div class="err">${esc(error)}</div>` : opts.help ? `<div class="help">${opts.help}</div>` : f.help ? `<div class="help">${esc(f.help)}</div>` : ""}
 </div>`;
   }
 
   // --- routing --------------------------------------------------------------------------
 
   function parse(hash) {
-    let m = /^#\/(contracts|invoices)(?:\/([^/?]+))?(?:\?(.*))?$/.exec(hash);
+    let m = /^#\/(contracts|invoices|vendors)(?:\/([^/?]+))?(?:\?(.*))?$/.exec(hash);
     if (m) return { name: "fin", page: m[1], id: m[2] ? decodeURIComponent(m[2]) : "", query: new URLSearchParams(m[3] || "") };
     m = /^#\/costs\/?$/.exec(hash);
     if (m) return { name: "fin", page: "costs" };
@@ -129,12 +131,128 @@
     route = r;
     shownUnsaved = false;
     if (r.page === "costs") return { html: renderCosts(), title: "Costs" };
-    if (!r.id) return r.page === "contracts" ? { html: renderContracts(), title: "Contracts" } : { html: renderInvoices(), title: "Invoices" };
+    if (!r.id) {
+      if (r.page === "vendors") return { html: renderVendors(), title: "Vendors" };
+      return r.page === "contracts" ? { html: renderContracts(), title: "Contracts" } : { html: renderInvoices(), title: "Invoices" };
+    }
     const rec = r.id === "new" ? null : F.store.record(r.page, r.id);
     if (r.id !== "new" && !rec) return null;
+    if (r.page === "vendors") return { html: renderVendorForm(rec), title: rec ? rec.name : "New vendor" };
     return r.page === "contracts"
       ? { html: renderContractForm(rec), title: rec ? `${rec.vendor} — ${rec.title}` : "New contract" }
       : { html: renderInvoiceForm(rec), title: rec ? `Invoice ${rec.invoice_number || ""} · ${rec.vendor}` : "New invoice" };
+  }
+
+  // --- vendor helpers for contract/invoice forms -------------------------------------------
+
+  function vendorOpts(f, data) {
+    if (f.name !== "vendor") return {};
+    const v = F.findVendor(data.vendor);
+    return { vendorList: true, help: data.vendor && !v ? "New vendor: it's added to the vendor directory when you save." : "Pick from the vendor directory or type a new name." };
+  }
+  function vendorCard(data) {
+    const v = F.vendorById(data.vendorId) || F.findVendor(data.vendor);
+    if (!v) return "";
+    const coi = F.coiStatus(v);
+    return `<div class="card"><div class="eyebrow">Vendor</div>
+  <div><a href="#/vendors/${encodeURIComponent(v.id)}"><strong>${esc(v.name)}</strong></a>${coi && coi.tone !== "ok" ? ` ${badge(coi.tone, coi.text)}` : ""}</div>
+  <dl class="kv">${[["Contact", v.contact_name], ["Phone", v.phone], ["After hours", v.emergency_phone], ["Email", v.email]].filter(([, x]) => x)
+    .map(([k, x]) => `<div><dt>${k}</dt><dd>${esc(x)}</dd></div>`).join("")}</dl></div>`;
+  }
+
+  // --- vendors ----------------------------------------------------------------------------
+
+  function vendorStats(v) {
+    const u = F.vendorUsage(v.id), today = F.today(), sm = SM(), cy = curFY();
+    const spend = (y) => u.invoices.filter((i) => F.budgetYearOf(i.invoice_date, sm) === y).reduce((a, i) => a + F.invoiceTotal(i), 0);
+    const live = u.contracts.filter((c) => !["Ended", "Expired"].includes(F.contractInfo(c, today).state));
+    const bids = new Set([...u.contracts, ...u.invoices].map((r) => r.buildingId || "").concat(u.places.map((p) => p.building.id)));
+    return { u, live, spend, cy, buildings: [...bids].map(bName) };
+  }
+
+  function renderVendors() {
+    const q = F.canonVendor(view.vq);
+    const list = F.vendorChoices().filter((v) => (!view.trade || v.trade === view.trade) &&
+      (!q || F.canonVendor([v.name, v.contact_name, v.phone, v.email].join(" ")).includes(q)));
+    const rows = list.map((v) => ({ v, st: vendorStats(v), coi: F.coiStatus(v) }));
+    const coiIssues = rows.filter((x) => x.coi && x.coi.tone !== "ok").length;
+    const table = rows.length ? `<section class="card"><div class="table-wrap"><table class="grid list">
+  <thead><tr><th scope="col">Vendor</th><th scope="col">Phone</th><th scope="col">After hours</th><th scope="col">Buildings</th><th scope="col" class="num">Active contracts</th><th scope="col" class="num">Spend ${esc(fyLabel(curFY()))}</th><th scope="col">Insurance</th></tr></thead>
+  <tbody>${rows.map(({ v, st, coi }) => `<tr>
+    <td><a href="#/vendors/${encodeURIComponent(v.id)}"><strong>${esc(v.name)}</strong></a><div class="small dim-ink">${esc([v.trade, v.contact_name].filter(Boolean).join(" · ") || "—")}</div></td>
+    <td class="mono">${esc(v.phone || "—")}</td>
+    <td class="mono">${esc(v.emergency_phone || "—")}</td>
+    <td class="small">${esc(st.buildings.join(", ") || "—")}</td>
+    <td class="num mono">${st.live.length}</td>
+    <td class="num mono">${esc(F.money0(st.spend(st.cy)))}</td>
+    <td>${coi ? badge(coi.tone, coi.text) : '<span class="dim-ink small">not tracked</span>'}</td>
+  </tr>`).join("")}</tbody></table></div></section>`
+      : `<div class="card empty"><p>${F.store.records("vendors").length ? "No vendors match." : "No vendors yet. Add one, or they're added automatically when you save or import a contract or invoice."}</p></div>`;
+    return `<div class="page">
+${pageHead("Vendors", "One directory of service vendors, shared by the building wizard, contracts, invoices and costs.",
+  `<a class="btn primary" href="#/vendors/new">+ New vendor</a><button type="button" class="btn" data-fin="csv-vendors">Export CSV</button>`)}
+${filterBar([`<label>Search <input type="search" data-filter="vq" value="${esc(view.vq)}" placeholder="Name, contact, phone"></label>`,
+  `<label>Trade <select data-filter="trade"><option value="">Any</option>${F.TRADES.map((t) => `<option${t === view.trade ? " selected" : ""}>${esc(t)}</option>`).join("")}</select></label>`])}
+${coiIssues ? `<div class="card warn"><div class="warn-title">${plural(coiIssues, "vendor")} with an expired or expiring insurance certificate</div><p class="small">Ask for an updated COI before their next visit.</p></div>` : ""}
+${table}
+</div>`;
+  }
+
+  function renderVendorForm(rec) {
+    const ov = override && override.kind === "vendors" && override.id === (rec ? rec.id : "new") ? override : null;
+    override = null;
+    shownUnsaved = !!ov;
+    const data = ov ? ov.data : rec || {};
+    const errors = ov ? ov.errors : {};
+    const q = route.query && route.query.get("return"), back = q && /^#\/[\w\-/%?=&.]*$/.test(q) ? q : "";
+    let side = "";
+    if (rec) {
+      const st = vendorStats(rec), coi = F.coiStatus(rec), ys = [st.cy, st.cy - 1, st.cy - 2];
+      const others = F.vendorChoices().filter((v) => v.id !== rec.id);
+      const used = st.u.contracts.length + st.u.invoices.length + st.u.places.length;
+      side = `
+${coi ? `<div class="card${coi.tone === "ok" ? "" : coi.tone === "err" ? " errbox" : " warn"}"><div class="warn-title">${esc(coi.text)}</div><p class="small">Certificate of insurance on file until ${esc(F.fmtDate(rec.insurance_expires))}.</p></div>` : ""}
+<div class="card"><div class="eyebrow">Spend</div>
+  <ul class="mini">${ys.map((y) => `<li><span>${esc(fyLabel(y))}</span><span class="mono">${esc(F.money0(st.spend(y)))}</span></li>`).join("")}</ul>
+  <p class="small dim-ink">${plural(st.u.invoices.length, "invoice")} in total. <a href="#/invoices" data-fin="vendor-invoices" data-name="${esc(rec.name)}">See invoices</a></p></div>
+<div class="card"><div class="eyebrow">Contracts</div>${st.u.contracts.length ? `<ul class="mini">${st.u.contracts.map((c) => {
+    const i = F.contractInfo(c, F.today());
+    return `<li><a href="#/contracts/${encodeURIComponent(c.id)}">${esc(c.title)}</a>${badge(i.tone, i.state)}</li>`;
+  }).join("")}</ul>` : '<p class="small dim-ink">None.</p>'}
+  <a class="side-link" href="#/contracts/new?vendor=${encodeURIComponent(rec.id)}">+ New contract with this vendor</a></div>
+<div class="card"><div class="eyebrow">Listed in building manuals</div>${st.u.places.length ? `<ul class="mini">${st.u.places.map((p) =>
+    `<li><a href="#/b/${encodeURIComponent(p.building.id)}/${p.stepKey}">${esc(p.building.name)}</a><span class="small dim-ink">${esc(p.where)}</span></li>`).join("")}</ul>` : '<p class="small dim-ink">Not picked on any wizard step yet.</p>'}</div>
+<div class="card"><div class="eyebrow">Merge duplicate</div>
+  <p class="small dim-ink">Moves this vendor's contracts, invoices and wizard entries to another vendor, then removes this one.</p>
+  ${others.length ? `<div class="row-gap"><label class="sr" for="merge-into">Merge into</label><select id="merge-into"><option value="">Merge into…</option>${others.map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")}</select>
+  <button type="button" class="btn" data-fin="merge">Merge</button></div>` : '<p class="small dim-ink">No other vendors.</p>'}
+  <div class="row-gap" style="margin-top: 12px">${used ? `<span class="small dim-ink">In use, so it can't be deleted. Merge it instead.</span>` : `<button type="button" class="btn danger" data-fin="delete">Delete vendor</button>`}</div></div>`;
+    }
+    return `<div class="page">
+<a class="crumb-link" href="${back ? esc(back) : "#/vendors"}" data-fin="discard">← ${back ? "Back" : "Vendors"}</a>
+<div class="page-head"><div><h1>${rec ? esc(rec.name) : "New vendor"}</h1></div></div>
+<div class="layout-2">
+  <form id="fin-form" class="stack" novalidate>
+    <section class="card"><div class="fields">${F.VENDOR_FIELDS.map((f) => fieldHtml(f, data[f.name], errors[f.name])).join("")}</div></section>
+    <div class="actions">
+      <button class="btn primary" name="action" value="save">Save vendor</button>
+      <a class="btn" href="${back ? esc(back) : "#/vendors"}" data-fin="discard">Cancel</a>
+    </div>
+  </form>
+  <aside class="side">${side}</aside>
+</div>
+</div>`;
+  }
+
+  function exportVendorsCSV() {
+    const rows = [["Vendor", "Trade", "Contact", "Phone", "After hours", "Email", "Account no.", "Website", "Address", "COI expires", "COI status",
+      "Buildings", "Active contracts", `Spend ${fyLabel(curFY())}`, "Notes"]];
+    for (const v of F.vendorChoices()) {
+      const st = vendorStats(v), coi = F.coiStatus(v);
+      rows.push([v.name, v.trade, v.contact_name, v.phone, v.emergency_phone, v.email, v.account_number, v.website, v.address,
+        v.insurance_expires, coi ? coi.text : "", st.buildings.join("; "), st.live.length, st.spend(st.cy).toFixed(2), v.notes]);
+    }
+    F.ui.saveBlob(new Blob([F.toCSV(rows)], { type: "text/csv" }), `vendors-${stamp()}.csv`);
   }
 
   // --- contracts list ------------------------------------------------------------------
@@ -215,7 +333,9 @@ ${table}
     const ov = override && override.kind === "contracts" && override.id === (rec ? rec.id : "new") ? override : null;
     override = null;
     shownUnsaved = !!ov;
-    const data = ov ? ov.data : rec || { status: "Active", buildingId: view.scope === "all" ? "" : view.scope };
+    const preV = !rec && route.query && route.query.get("vendor") ? F.vendorById(route.query.get("vendor")) : null;
+    const data = ov ? ov.data : rec || { status: "Active", buildingId: view.scope === "all" ? "" : view.scope,
+      ...(preV ? { vendor: preV.name, category: preV.trade || "" } : {}) };
     const assets = ov ? ov.assets : (rec && rec.assets) || [];
     const errors = ov ? ov.errors : {};
     const info = F.contractInfo(data, F.today());
@@ -224,7 +344,7 @@ ${table}
     const ytd = linked.filter((i) => F.budgetYearOf(i.invoice_date, SM()) === curFY()).reduce((a, i) => a + F.invoiceTotal(i), 0);
 
     const group = (title, names) => `<section class="card"><h2 class="sec-title">${title}</h2><div class="fields">${
-      F.CONTRACT_FIELDS.filter((f) => names.includes(f.name)).map((f) => fieldHtml(f, data[f.name], errors[f.name])).join("")}</div></section>`;
+      F.CONTRACT_FIELDS.filter((f) => names.includes(f.name)).map((f) => fieldHtml(f, data[f.name], errors[f.name], vendorOpts(f, data))).join("")}</div></section>`;
 
     const summary = data.start_date ? `
 <div class="card">
@@ -265,7 +385,7 @@ ${table}
       ${rec ? `<button type="button" class="btn danger push" data-fin="delete">Delete</button>` : ""}
     </div>
   </form>
-  <aside class="side">${summary}${inv}</aside>
+  <aside class="side">${vendorCard(data)}${summary}${inv}</aside>
 </div>
 </div>`;
   }
@@ -344,7 +464,7 @@ ${table}
     const tags = F.assetTags(b);
     const cOpts = contracts().filter((c) => (c.buildingId || "") === (data.buildingId || "") || c.buildingId === "" || c.id === data.contractId)
       .sort((x, y) => x.vendor.localeCompare(y.vendor));
-    const field = (n) => fieldHtml(F.INVOICE_FIELDS.find((f) => f.name === n), data[n], errors[n], { contracts: cOpts });
+    const field = (n) => { const f = F.INVOICE_FIELDS.find((x) => x.name === n); return fieldHtml(f, data[n], errors[n], { contracts: cOpts, ...vendorOpts(f, data) }); };
     const probe = { ...data, lines };
     const dup = rec || data.invoice_number ? F.findDuplicateInvoice(invoices(), { ...probe, id: rec ? rec.id : "" }) : null;
     const check = F.invoiceCheck(probe);
@@ -386,6 +506,7 @@ ${table}
     </div>
   </form>
   <aside class="side">
+    ${vendorCard(data)}
     ${dup ? `<div class="card errbox"><div class="warn-title">Possible duplicate</div><p class="small">Invoice ${esc(dup.invoice_number)} from ${esc(dup.vendor)} is already saved (${esc(F.fmtDate(dup.invoice_date))}, ${esc(F.money(F.invoiceTotal(dup)))}). <a href="#/invoices/${encodeURIComponent(dup.id)}">Open it</a></p></div>` : ""}
     ${check ? `<div class="card warn"><div class="warn-title">Totals don't match</div><p class="small">${esc(check)}</p></div>` : ""}
     ${hist.length ? `<div class="card"><div class="eyebrow">Equipment cost history</div><ul class="mini">${hist.map((h) =>
@@ -400,6 +521,12 @@ ${table}
 
   function readForm(form) {
     const fd = new FormData(form), kind = route.page;
+    if (kind === "vendors") {
+      const { data, errors } = F.parseFields(F.VENDOR_FIELDS, fd);
+      const same = data.name && F.findVendor(data.name);
+      if (same && same.id !== route.id) errors.name = `“${same.name}” is already in the directory. Open it, or merge the two.`;
+      return { data, errors };
+    }
     if (kind === "contracts") {
       const { data, errors } = F.parseFields(F.CONTRACT_FIELDS, fd);
       const assets = fd.getAll("asset").map((v) => { const k = String(v), i = k.indexOf("|"); return { buildingId: k.slice(0, i), tag: k.slice(i + 1) }; });
@@ -426,9 +553,21 @@ ${table}
       return false;
     }
     const prev = id ? F.store.record(kind, id) : null;
-    const rec = { ...(prev || {}), ...st.data, id, reviewed: true };
-    if (kind === "contracts") rec.assets = st.assets; else rec.lines = st.lines;
+    const rec = { ...(prev || {}), ...st.data, id };
     try {
+      if (kind === "vendors") {
+        const q = route.query && route.query.get("return"), back = q && /^#\/[\w\-/%?=&.]*$/.test(q) ? q : "";
+        const nid = F.saveVendor(rec);
+        F.ui.setDirty(false);
+        if (back) history.replaceState(null, "", back);
+        else if (!id) history.replaceState(null, "", `#/vendors/${encodeURIComponent(nid)}`);
+        if (back) F.ui.flash("ok", `${rec.name} added to the vendor directory; pick it from the list.`);
+        return true;
+      }
+      rec.reviewed = true;
+      if (kind === "contracts") rec.assets = st.assets; else rec.lines = st.lines;
+      rec.vendorId = F.ensureVendor(rec.vendor, kind === "contracts" && F.TRADES.includes(rec.category) ? { trade: rec.category } : {});
+      if (rec.vendorId) rec.vendor = F.vendorById(rec.vendorId).name;
       const nid = F.store.saveRecord(kind, rec);
       F.ui.setDirty(false);
       if (!id) history.replaceState(null, "", `#/${kind}/${encodeURIComponent(nid)}`);
@@ -504,7 +643,8 @@ ${table}
   <thead><tr><th scope="col">Vendor</th><th scope="col" class="num">${esc(yl)}</th><th scope="col" class="num">${esc(py)}</th><th scope="col" class="num">Change</th><th scope="col" class="num">Invoices</th></tr></thead>
   <tbody>${r.byVendor.slice(0, 15).map((v) => {
     const ch = v.prior ? Math.round(((v.total - v.prior) / v.prior) * 100) : null;
-    return `<tr><td>${esc(v.vendor)}</td><td class="num mono">${esc(F.money0(v.total))}</td><td class="num mono">${esc(F.money0(v.prior))}</td>
+    const dv = F.findVendor(v.vendor);
+    return `<tr><td>${dv ? `<a href="#/vendors/${encodeURIComponent(dv.id)}">${esc(v.vendor)}</a>` : esc(v.vendor)}</td><td class="num mono">${esc(F.money0(v.total))}</td><td class="num mono">${esc(F.money0(v.prior))}</td>
       <td class="num mono">${ch === null ? "—" : `${ch > 0 ? "+" : ""}${ch}%`}</td><td class="num mono">${v.count}</td></tr>`;
   }).join("")}</tbody></table></div>` : '<p class="small dim-ink">No invoices for this period.</p>';
 
@@ -796,6 +936,20 @@ ${filterBar([scopeFilter(), yearFilter("year", year, false), fySetting])}
       case "ics": exportICS(); break;
       case "csv-contracts": exportContractsCSV(); break;
       case "csv-invoices": exportInvoicesCSV(); break;
+      case "csv-vendors": exportVendorsCSV(); break;
+      case "vendor-invoices": view.vendor = el.dataset.name; view.invYear = 0; view.scope = "all"; remember(); F.ui.setDirty(false); return false;
+      case "merge": {
+        const into = document.getElementById("merge-into").value, from = F.vendorById(route.id);
+        if (!into) { F.ui.flash("error", "Pick the vendor to merge into."); F.ui.render(); break; }
+        const target = F.vendorById(into);
+        if (window.confirm(`Merge “${from.name}” into “${target.name}”? Its contracts, invoices and wizard entries move to ${target.name}, and “${from.name}” is removed.`)) {
+          F.mergeVendor(route.id, into);
+          F.ui.setDirty(false);
+          F.ui.flash("ok", `Merged into ${target.name}.`);
+          F.ui.go(`#/vendors/${encodeURIComponent(into)}`);
+        }
+        break;
+      }
       case "add-line": {
         const tb = document.querySelector("table.lines tbody");
         tb.appendChild(document.getElementById("line-tpl").content.cloneNode(true));
@@ -816,7 +970,7 @@ ${filterBar([scopeFilter(), yearFilter("year", year, false), fySetting])}
       case "pick-year": view.year = Number(el.dataset.year); remember(); F.ui.render(); break;
       case "delete": {
         const kind = route.page, rec = F.store.record(kind, route.id);
-        const what = kind === "contracts" ? `the ${rec.vendor} contract “${rec.title}”` : `invoice ${rec.invoice_number || ""} from ${rec.vendor}`;
+        const what = kind === "vendors" ? `the vendor “${rec.name}”` : kind === "contracts" ? `the ${rec.vendor} contract “${rec.title}”` : `invoice ${rec.invoice_number || ""} from ${rec.vendor}`;
         const extra = kind === "contracts" ? " Invoices linked to it are kept and unlinked." : "";
         if (window.confirm(`Delete ${what}?${extra} This can't be undone unless you have a backup file.`)) {
           F.store.removeRecord(kind, route.id);
@@ -839,8 +993,8 @@ ${filterBar([scopeFilter(), yearFilter("year", year, false), fySetting])}
       view[k] = k === "year" || k === "invYear" ? Number(t.value) : t.value;
       remember();
       F.ui.render();
-      if (k === "vendor") {                                  // keep typing position in the search box
-        const s = document.querySelector('[data-filter="vendor"]');
+      if (k === "vendor" || k === "vq") {                    // keep typing position in the search box
+        const s = document.querySelector(`[data-filter="${k}"]`);
         if (s) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
       }
       return true;
@@ -865,7 +1019,7 @@ ${filterBar([scopeFilter(), yearFilter("year", year, false), fySetting])}
   let vendorTimer = null;
   function onInput(e) {
     const t = e.target;
-    if (t.dataset && t.dataset.filter === "vendor") {
+    if (t.dataset && (t.dataset.filter === "vendor" || t.dataset.filter === "vq")) {
       clearTimeout(vendorTimer);
       vendorTimer = setTimeout(() => onChange(e), 250);
       return true;

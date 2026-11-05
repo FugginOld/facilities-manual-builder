@@ -15,7 +15,7 @@
   let state = load();
 
   function empty() {
-    return { buildings: {}, contracts: {}, invoices: {}, budgets: {}, settings: {},
+    return { buildings: {}, contracts: {}, invoices: {}, vendors: {}, budgets: {}, settings: {},
              meta: { lastExport: null, changedSinceExport: false } };
   }
 
@@ -24,7 +24,7 @@
       const raw = window.localStorage.getItem(KEY);
       if (!raw) return empty();
       const s = JSON.parse(raw);
-      return { buildings: s.buildings || {}, contracts: s.contracts || {}, invoices: s.invoices || {},
+      return { buildings: s.buildings || {}, contracts: s.contracts || {}, invoices: s.invoices || {}, vendors: s.vendors || {},
                budgets: s.budgets || {}, settings: s.settings || {}, meta: { ...empty().meta, ...(s.meta || {}) } };
     } catch (e) {
       available = false;            // blocked storage (some locked-down browsers) or corrupt data
@@ -98,10 +98,16 @@
     linkedCount: (id) => Object.values(state.contracts).filter((r) => r.buildingId === id).length +
       Object.values(state.invoices).filter((r) => r.buildingId === id).length,
 
-    hasAnyData: () => Object.keys(state.buildings).length + Object.keys(state.contracts).length +
+    hasAnyData: () => Object.keys(state.buildings).length + Object.keys(state.contracts).length + Object.keys(state.vendors).length +
       Object.keys(state.invoices).length > 0,
 
-    // --- contracts & invoices (same shape of API for both) ---------------------
+    /** Batch change: fn(state) edits records in place, saved once. fn must set updatedAt on what it changes. */
+    mutate(fn) {
+      fn(state);
+      persist();
+    },
+
+    // --- contracts, invoices, vendors (same shape of API) ---------------------
     records: (kind) => Object.values(state[kind]),
     record: (kind, id) => state[kind][id] || null,
 
@@ -126,6 +132,25 @@
     /** Month (1-12) the budget year starts in. 1 = calendar year. */
     fyStart: () => { const m = Number(state.settings.fyStartMonth); return m >= 1 && m <= 12 ? m : 1; },
     setFyStart(m) { state.settings.fyStartMonth = Number(m); state.settings.updatedAt = now(); persist(); },
+    /** Company settings for the manual: companyName, preparedBy, accent, footerText, logoId. */
+    settings: () => ({ ...state.settings }),
+    setSettings(patch) { Object.assign(state.settings, patch, { updatedAt: now() }); persist(); },
+
+    // --- photos: building.photos = { stepKey: [{ id, caption, ref }] } (images live in IndexedDB)
+    photos: (bid, key) => ((state.buildings[bid] || {}).photos || {})[key] || [],
+    setPhotos(bid, key, list) {
+      const b = state.buildings[bid];
+      b.photos = { ...(b.photos || {}), [key]: list };
+      touch(b);
+      persist();
+    },
+    /** Every image id still referenced anywhere (photos and the logo). */
+    fileRefs() {
+      const ids = new Set();
+      for (const b of Object.values(state.buildings)) for (const list of Object.values(b.photos || {})) list.forEach((p) => ids.add(p.id));
+      if (state.settings.logoId) ids.add(state.settings.logoId);
+      return ids;
+    },
 
     // --- budgets: one amount per budget year per scope (building id, or "" company-wide)
     budget: (year, scope) => { const b = state.budgets[`${year}|${scope}`]; return b ? b.amount : null; },
@@ -143,20 +168,24 @@
       persist();
     },
 
-    saveStep(id, key, data, completed, system, rows) {
+    /** rows: { system: [rows] } for each of the step's tables (or omit). */
+    saveStep(id, key, data, completed, rows) {
       const b = state.buildings[id], t = now();
       b.steps[key] = { data, completed, updatedAt: t };
-      if (system) b.equipment[system] = rows;
+      for (const [system, list] of Object.entries(rows || {})) b.equipment[system] = list;
       if (key === "profile" && data.name) b.name = data.name;
       touch(b);
       persist(); askPersist();
     },
 
-    exportJSON() {
+    /** files: optional [{id, name, type, w, h, data(base64)}] images to include. */
+    exportJSON(files) {
       return JSON.stringify({
-        app: APP, format: 2, exportedAt: now(),
+        app: APP, format: files ? 3 : 2, exportedAt: now(),
+        ...(files ? { files } : {}),
         buildings: Object.values(state.buildings),
         contracts: Object.values(state.contracts),
+        vendors: Object.values(state.vendors),
         invoices: Object.values(state.invoices),
         budgets: state.budgets,
         settings: state.settings,
@@ -169,7 +198,7 @@
       try { persist(false); } catch (e) { /* surfaced elsewhere */ }
     },
 
-    /** Merge a backup (format 1 or 2). New items are added; one that already exists
+    /** Merge a backup (format 1-3). New items are added; one that already exists
      *  is replaced only if the file's copy is newer. Nothing is ever deleted. */
     importJSON(text) {
       let doc;
@@ -187,10 +216,10 @@
         else res.skipped++;
       }
       res.records = { added: 0, updated: 0 };
-      for (const kind of ["contracts", "invoices"]) {
+      for (const kind of ["contracts", "invoices", "vendors"]) {
         if (!Array.isArray(doc[kind])) continue;
         for (const r of doc[kind]) {
-          if (!r || typeof r.id !== "string" || typeof r.vendor !== "string") continue;
+          if (!r || typeof r.id !== "string" || typeof (kind === "vendors" ? r.name : r.vendor) !== "string") continue;
           const mine = state[kind][r.id];
           if (!mine) { state[kind][r.id] = r; res.records.added++; }
           else if ((r.updatedAt || "") > (mine.updatedAt || "")) { state[kind][r.id] = r; res.records.updated++; }
@@ -204,11 +233,16 @@
           if (!mine || (v.updatedAt || "") > (mine.updatedAt || "")) { state.budgets[k] = v; budgetChanged = true; }
         }
       }
-      if (doc.settings && typeof doc.settings === "object" && Number(doc.settings.fyStartMonth) >= 1 &&
-          Number(doc.settings.fyStartMonth) <= 12 && (doc.settings.updatedAt || "") > (state.settings.updatedAt || "")) {
-        state.settings = { ...state.settings, fyStartMonth: Number(doc.settings.fyStartMonth), updatedAt: doc.settings.updatedAt };
+      const ds = doc.settings;
+      if (ds && typeof ds === "object" && (ds.updatedAt || "") > (state.settings.updatedAt || "")) {
+        const clean = {};
+        if (Number(ds.fyStartMonth) >= 1 && Number(ds.fyStartMonth) <= 12) clean.fyStartMonth = Number(ds.fyStartMonth);
+        for (const k of ["companyName", "preparedBy", "footerText", "logoId"]) if (typeof ds[k] === "string") clean[k] = ds[k];
+        if (typeof ds.accent === "string" && /^#[0-9a-f]{6}$/i.test(ds.accent)) clean.accent = ds.accent;
+        state.settings = { ...state.settings, ...clean, updatedAt: ds.updatedAt };
         budgetChanged = true;
       }
+      res.files = Array.isArray(doc.files) ? doc.files : [];
       if (res.added || res.updated || res.records.added || res.records.updated || budgetChanged) persist();
       return res;
     },
