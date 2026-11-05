@@ -1,4 +1,5 @@
-/* UI: hash router, rendering, events. Routes: #/  and  #/b/<buildingId>/<stepKey> */
+/* UI: hash router, rendering, events. Routes: #/  and  #/b/<buildingId>/<stepKey>;
+ * contracts, invoices and costs routes are handled by finance-ui.js. */
 (function (F) {
   "use strict";
 
@@ -28,6 +29,8 @@
   const stepUrl = (bid, key) => `#/b/${encodeURIComponent(bid)}/${key}`;
 
   function parseRoute() {
+    const fin = F.finUI.parse(location.hash);
+    if (fin) return fin;
     const m = location.hash.match(/^#\/b\/([^/]+)\/([a-z_]+)$/);
     if (m) return { name: "step", bid: decodeURIComponent(m[1]), key: m[2] };
     return { name: "home" };
@@ -36,7 +39,10 @@
   // --- rendering ------------------------------------------------------------
 
   function topbar(b) {
-    const meta = F.store.meta(), any = F.store.list().length > 0;
+    const meta = F.store.meta(), any = F.store.hasAnyData();
+    const tab = route.name === "fin" ? route.page : "buildings";
+    const nav = [["buildings", "#/", "Buildings"], ["contracts", "#/contracts", "Contracts"], ["invoices", "#/invoices", "Invoices"], ["costs", "#/costs", "Costs"]]
+      .map(([k, href, label]) => `<a href="${href}"${k === tab ? ' aria-current="page"' : ""}>${label}</a>`).join("");
     const stale = any && (meta.changedSinceExport || !meta.lastExport);
     const status = meta.lastExport ? `Backup ${when(meta.lastExport)}` : "No backup yet";
     return `
@@ -45,6 +51,7 @@
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 21v-6h6v6"/></svg>
     Facilities Manual Builder
   </a>
+  <nav class="tabs" aria-label="Main">${nav}</nav>
   ${b ? `<div class="crumb"><span class="dim">Building</span> <strong>${esc(b.name)}</strong></div>` : ""}
   <div class="topbar-right">
     <span class="backup${stale ? " stale" : ""}" title="${stale ? "Changes since your last backup" : "Backed up"}">${esc(status)}${stale && meta.lastExport ? " · changes since" : ""}</span>
@@ -96,6 +103,7 @@ ${flashes.length ? `<div class="flashes" role="status">${flashes.map((f) => `<di
       <button class="btn primary">+ New building</button>
     </form>
   </div>
+  ${F.finUI.homeCard()}
   <p class="note">Your data is saved in this browser on this PC only. Use <strong>Export backup</strong> regularly and keep the file on OneDrive or a network drive; <strong>Import</strong> brings it back here or onto another PC.</p>
   ${cards ? `<div class="cards">${cards}</div>` : `<div class="card empty"><p>No buildings yet. Add one above, or Import a backup file.</p></div>`}
 </div>`;
@@ -247,10 +255,26 @@ ${warnings.length ? `<div class="card warn"><div class="warn-title">Missing befo
         if (location.hash !== "#/") history.replaceState(null, "", "#/");
       }
     }
-    if (route.name === "home") { dirty = false; renderHome(); }
+    let finTitle = "";
+    if (route.name === "fin") {
+      const out = F.finUI.render(route);
+      if (!out) {
+        flash("error", "That record wasn't found. It may have been deleted, or it's saved in another browser.");
+        const list = `#/${route.page}`;
+        history.replaceState(null, "", list);
+        route = parseRoute();
+        const again = F.finUI.render(route);
+        app.innerHTML = `${topbar()}${again.html}`;
+        finTitle = again.title;
+      } else {
+        app.innerHTML = `${topbar()}${out.html}`;
+        finTitle = out.title;
+      }
+      dirty = F.finUI.unsaved();
+    } else if (route.name === "home") { dirty = false; renderHome(); }
     else renderStep(b, step);
     flashes = [];
-    document.title = step && b ? `${step.title} · ${b.name}` : "Facilities Manual Builder";
+    document.title = finTitle ? `${finTitle} · Facilities Manual Builder` : step && b ? `${step.title} · ${b.name}` : "Facilities Manual Builder";
     window.scrollTo(0, 0);
   }
 
@@ -258,6 +282,7 @@ ${warnings.length ? `<div class="card warn"><div class="warn-title">Missing befo
 
   /** Validate and save the open step form. Returns true on success. */
   function saveForm() {
+    if (F.finUI.hasForm()) return F.finUI.save();
     const form = document.getElementById("step-form");
     if (!form || route.name !== "step") return true;
     const step = F.byKey(route.key), bid = route.bid;
@@ -338,7 +363,9 @@ ${warnings.length ? `<div class="card warn"><div class="warn-title">Missing befo
   async function importBackup(file) {
     try {
       const r = F.store.importJSON(await file.text());
-      flash("ok", `Import complete: ${plural(r.added, "building")} added, ${r.updated} updated, ${r.skipped} unchanged (this browser already had the same or newer copy).`);
+      const rec = r.records || { added: 0, updated: 0 };
+      flash("ok", `Import complete: ${plural(r.added, "building")} added, ${r.updated} updated, ${r.skipped} unchanged; ` +
+        `${plural(rec.added, "contract/invoice")} added, ${rec.updated} updated. Existing items are only replaced by newer copies.`);
     } catch (e) {
       flash("error", e.message);
     }
@@ -512,6 +539,7 @@ ${warnings.length ? `<div class="card warn"><div class="warn-title">Missing befo
   // --- events ---------------------------------------------------------------
 
   document.addEventListener("click", (e) => {
+    if (F.finUI.onClick(e)) return;
     const add = e.target.closest("[data-add-row]");
     if (add) {
       const sys = add.dataset.addRow;
@@ -547,7 +575,9 @@ ${warnings.length ? `<div class="card warn"><div class="warn-title">Missing befo
         }
         case "delete": {
           const b = F.store.get(bid);
-          if (window.confirm(`Delete “${b.name}”? This can't be undone unless you have a backup file.`)) {
+          const n = F.store.linkedCount(bid);
+          const keep = n ? ` Its ${plural(n, "contract/invoice")} will be kept as company-wide / unassigned.` : "";
+          if (window.confirm(`Delete “${b.name}”?${keep} This can't be undone unless you have a backup file.`)) {
             F.store.remove(bid);
             flash("ok", `Deleted ${b.name}.`);
             render();
@@ -574,6 +604,10 @@ ${warnings.length ? `<div class="card warn"><div class="warn-title">Missing befo
       catch (err) { flash("error", err.message); render(); }
       return;
     }
+    if (e.target.id === "fin-form") {
+      if (F.finUI.save()) { flash("ok", "Saved."); render(); }
+      return;
+    }
     if (e.target.id === "step-form") {
       const action = (e.submitter && e.submitter.value) || "save";
       if (!saveForm()) return;
@@ -584,8 +618,14 @@ ${warnings.length ? `<div class="card warn"><div class="warn-title">Missing befo
     }
   });
 
-  document.addEventListener("input", (e) => { if (e.target.closest("#step-form")) dirty = true; });
-  document.addEventListener("change", (e) => { if (e.target.closest("#step-form")) dirty = true; });
+  document.addEventListener("input", (e) => {
+    if (F.finUI.onInput(e)) return;
+    if (e.target.closest("#step-form, #fin-form")) dirty = true;
+  });
+  document.addEventListener("change", (e) => {
+    if (F.finUI.onChange(e)) return;
+    if (e.target.closest("#step-form, #fin-form")) dirty = true;
+  });
   fileInput.addEventListener("change", () => { if (fileInput.files[0]) importBackup(fileInput.files[0]); });
   window.addEventListener("hashchange", render);
   window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
@@ -595,5 +635,6 @@ ${warnings.length ? `<div class="card warn"><div class="warn-title">Missing befo
     if (el) el.textContent = plural(document.querySelectorAll(`table[data-table="${sys}"] tbody tr`).length, el.dataset.noun);
   }
 
+  F.ui = { esc, plural, flash, render, go, saveBlob, setDirty: (v) => { dirty = !!v; } };
   render();
 })(window.FMB);

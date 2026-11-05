@@ -15,7 +15,8 @@
   let state = load();
 
   function empty() {
-    return { buildings: {}, meta: { lastExport: null, changedSinceExport: false } };
+    return { buildings: {}, contracts: {}, invoices: {}, budgets: {}, settings: {},
+             meta: { lastExport: null, changedSinceExport: false } };
   }
 
   function load() {
@@ -23,7 +24,8 @@
       const raw = window.localStorage.getItem(KEY);
       if (!raw) return empty();
       const s = JSON.parse(raw);
-      return { buildings: s.buildings || {}, meta: { ...empty().meta, ...(s.meta || {}) } };
+      return { buildings: s.buildings || {}, contracts: s.contracts || {}, invoices: s.invoices || {},
+               budgets: s.budgets || {}, settings: s.settings || {}, meta: { ...empty().meta, ...(s.meta || {}) } };
     } catch (e) {
       available = false;            // blocked storage (some locked-down browsers) or corrupt data
       return empty();
@@ -84,8 +86,60 @@
       return nid;
     },
 
+    /** Delete a building. Its contracts and invoices are kept and become company-wide / unassigned. */
     remove(id) {
       delete state.buildings[id];
+      for (const r of [...Object.values(state.contracts), ...Object.values(state.invoices)]) {
+        if (r.buildingId === id) { r.buildingId = ""; r.updatedAt = now(); }   // equipment tags kept as text
+      }
+      persist();
+    },
+
+    linkedCount: (id) => Object.values(state.contracts).filter((r) => r.buildingId === id).length +
+      Object.values(state.invoices).filter((r) => r.buildingId === id).length,
+
+    hasAnyData: () => Object.keys(state.buildings).length + Object.keys(state.contracts).length +
+      Object.keys(state.invoices).length > 0,
+
+    // --- contracts & invoices (same shape of API for both) ---------------------
+    records: (kind) => Object.values(state[kind]),
+    record: (kind, id) => state[kind][id] || null,
+
+    /** Insert or update a contract/invoice. Returns its id. */
+    saveRecord(kind, rec) {
+      const t = now(), id = rec.id || uid();
+      const prev = state[kind][id];
+      state[kind][id] = { ...rec, id, createdAt: (prev && prev.createdAt) || rec.createdAt || t, updatedAt: t };
+      persist(); askPersist();
+      return id;
+    },
+
+    removeRecord(kind, id) {
+      delete state[kind][id];
+      if (kind === "contracts") {
+        for (const inv of Object.values(state.invoices)) if (inv.contractId === id) { inv.contractId = ""; inv.updatedAt = now(); }
+      }
+      persist();
+    },
+
+    // --- settings ---------------------------------------------------------------------
+    /** Month (1-12) the budget year starts in. 1 = calendar year. */
+    fyStart: () => { const m = Number(state.settings.fyStartMonth); return m >= 1 && m <= 12 ? m : 1; },
+    setFyStart(m) { state.settings.fyStartMonth = Number(m); state.settings.updatedAt = now(); persist(); },
+
+    // --- budgets: one amount per budget year per scope (building id, or "" company-wide)
+    budget: (year, scope) => { const b = state.budgets[`${year}|${scope}`]; return b ? b.amount : null; },
+    allBudgets: () => Object.entries(state.budgets).map(([k, v]) => {
+      const i = k.indexOf("|");
+      return { year: Number(k.slice(0, i)), scope: k.slice(i + 1), amount: v.amount };
+    }),
+    budgetYears: () => [...new Set(Object.keys(state.budgets).map((k) => Number(k.split("|")[0])))],
+    budgetsForYear: (year) => Object.entries(state.budgets)
+      .filter(([k]) => k.startsWith(`${year}|`)).map(([k, v]) => ({ scope: k.slice(String(year).length + 1), amount: v.amount })),
+    setBudget(year, scope, amount) {
+      const k = `${year}|${scope}`;
+      if (amount === null || amount === "") delete state.budgets[k];
+      else state.budgets[k] = { amount: Number(amount), updatedAt: now() };
       persist();
     },
 
@@ -100,8 +154,12 @@
 
     exportJSON() {
       return JSON.stringify({
-        app: APP, format: 1, exportedAt: now(),
+        app: APP, format: 2, exportedAt: now(),
         buildings: Object.values(state.buildings),
+        contracts: Object.values(state.contracts),
+        invoices: Object.values(state.invoices),
+        budgets: state.budgets,
+        settings: state.settings,
       }, null, 2);
     },
 
@@ -111,8 +169,8 @@
       try { persist(false); } catch (e) { /* surfaced elsewhere */ }
     },
 
-    /** Merge a backup. New buildings are added; one that already exists is
-     *  replaced only if the file's copy is newer. Nothing is ever deleted. */
+    /** Merge a backup (format 1 or 2). New items are added; one that already exists
+     *  is replaced only if the file's copy is newer. Nothing is ever deleted. */
     importJSON(text) {
       let doc;
       try { doc = JSON.parse(text); } catch (e) { throw new Error("That file isn't valid JSON."); }
@@ -128,7 +186,30 @@
         else if ((b.updatedAt || "") > (mine.updatedAt || "")) { state.buildings[b.id] = b; res.updated++; }
         else res.skipped++;
       }
-      if (res.added || res.updated) persist();
+      res.records = { added: 0, updated: 0 };
+      for (const kind of ["contracts", "invoices"]) {
+        if (!Array.isArray(doc[kind])) continue;
+        for (const r of doc[kind]) {
+          if (!r || typeof r.id !== "string" || typeof r.vendor !== "string") continue;
+          const mine = state[kind][r.id];
+          if (!mine) { state[kind][r.id] = r; res.records.added++; }
+          else if ((r.updatedAt || "") > (mine.updatedAt || "")) { state[kind][r.id] = r; res.records.updated++; }
+        }
+      }
+      let budgetChanged = false;
+      if (doc.budgets && typeof doc.budgets === "object") {
+        for (const [k, v] of Object.entries(doc.budgets)) {
+          if (!/^\d{4}\|/.test(k) || !v || !Number.isFinite(Number(v.amount))) continue;
+          const mine = state.budgets[k];
+          if (!mine || (v.updatedAt || "") > (mine.updatedAt || "")) { state.budgets[k] = v; budgetChanged = true; }
+        }
+      }
+      if (doc.settings && typeof doc.settings === "object" && Number(doc.settings.fyStartMonth) >= 1 &&
+          Number(doc.settings.fyStartMonth) <= 12 && (doc.settings.updatedAt || "") > (state.settings.updatedAt || "")) {
+        state.settings = { ...state.settings, fyStartMonth: Number(doc.settings.fyStartMonth), updatedAt: doc.settings.updatedAt };
+        budgetChanged = true;
+      }
+      if (res.added || res.updated || res.records.added || res.records.updated || budgetChanged) persist();
       return res;
     },
   };

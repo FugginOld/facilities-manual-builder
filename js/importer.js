@@ -113,6 +113,10 @@
     return { value: v };
   }
 
+  F.extractJSON = extractJSON;          // shared with docimport.js
+  F.coerceValue = coerce;
+  F.matchOption = matchOption;
+
   /** Turn a pasted AI reply into a reviewable plan for building `b`. Throws on unreadable input. */
   F.buildImportPlan = (b, steps, text) => {
     const doc = extractJSON(text);

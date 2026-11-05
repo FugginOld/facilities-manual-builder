@@ -16,7 +16,7 @@ Only the code goes in the repo. Building data never leaves the browser it was en
 ## Where your data lives
 
 - Data is saved in **this browser's local storage, on this PC**. Another browser, another PC, or an InPrivate/Incognito window will not see it.
-- **Export backup** (top right) downloads a `.json` file of every building. Keep it on OneDrive or a network drive. The top bar shows an orange dot when there are changes since your last backup.
+- **Export backup** (top right) downloads a `.json` file of every building, contract, invoice, budget and setting. Keep it on OneDrive or a network drive. The top bar shows an orange dot when there are changes since your last backup.
 - **Import** loads a backup into any browser. It only adds data: new buildings are added, and an existing building is replaced only if the file's copy is newer. Nothing gets deleted.
 - Clearing browser data ("cookies and site data") erases the local copy. Your backup file is the safety net.
 
@@ -43,6 +43,25 @@ The **Fill from document…** button on each step works with any AI chat your co
 
 The AI will make mistakes, so check the preview against the document. The document goes to your AI, not to this app, so use only an AI your company has approved for these documents.
 
+## Contracts, invoices and costs
+
+Use the tabs at the top: **Buildings · Contracts · Invoices · Costs**. Each contract or invoice belongs to a building, or to *Company-wide / unassigned*.
+
+**Contracts** track vendor, term, auto-renewal, notice period, cost and billing frequency, service visits, annual escalation, and the equipment covered. From these the app works out:
+- the current term end (auto-renewals rolled forward), the **notice deadline**, and status (*Notice due*, *Renewing soon*, *Expiring*, *Expired*…)
+- annual cost (e.g. $1,200 billed quarterly = $4,800/yr, plus the escalation % each contract year) and the next service visit
+- **Upcoming deadlines** on the Contracts page and the Buildings page. **Add reminders to calendar (.ics)** downloads a file you open in Outlook; it adds each deadline with alerts 14 and 2 days before (30 days before for term ends). Download it again after you change contracts.
+
+**Invoices** record vendor, number, date, work type, and line items. Assign each line to a piece of equipment to track cost per asset. An invoice can be linked to a contract. Same vendor + invoice number is flagged as a possible duplicate.
+
+**Import from document…** (on both pages) uses the same copy-prompt → your AI → paste-reply steps as Fill from document. Several invoices can go in one reply. The app matches the building from the service address, the vendor to its existing spelling, equipment tags ("RTU 1" → RTU-1), and invoices to their contract by contract number. Anything already saved is unticked. Imported records are marked **CHECK** until you open one, compare it with the document, and Save.
+
+**Costs** shows, for one budget year: the budget (set per building), invoiced to date (with % of budget and change vs the same point last year), forecast (invoiced so far + contracted cost for the rest of the year) against budget, and contracted cost. Below that: a month-by-month chart, vendors this year vs last, spend by work type, spend per piece of equipment (3+ repair invoices are flagged as repair-or-replace candidates), and a **Budget years** table comparing every year side by side.
+
+**Budget years.** Set *Budget year starts* on the Costs page (default January = calendar year). A budget year is named by the year it ends: with July, FY2027 = Jul 2026 – Jun 2027. Every invoice counts in the budget year of its invoice date. Contracted costs are spread month by month, so a contract that spans two budget years is split between them. Budgets are stored per budget year and building. If you change the start month, check your budgets, because each one now covers the new 12-month window.
+
+**Export CSV** on either page gives Excel-ready files. In the invoice export each row is a line item, tax or remainder, so the Amount column always adds up to the invoice totals (good for pivot tables).
+
 ## Files
 
 ```
@@ -52,6 +71,9 @@ js/logic.js         validation, completeness, navigation
 js/store.js         local storage, backup export/import
 js/manual.js        Word document generator
 js/importer.js      Fill from document: prompt, reply parsing, review plan, apply
+js/finance.js       contract/invoice fields, term & renewal math, budget years, cost report, CSV, calendar file
+js/docimport.js     contract & invoice import: prompts, parsing, building/vendor/equipment/contract matching
+js/finance-ui.js    Contracts, Invoices and Costs screens
 js/app.js           screens and buttons
 css/style.css
 vendor/docx.iife.js docx 9.14.0 (MIT; see vendor/docx-LICENSE.txt), loaded only when generating a manual
